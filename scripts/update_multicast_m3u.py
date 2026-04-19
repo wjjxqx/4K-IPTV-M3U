@@ -234,6 +234,31 @@ def _extract_rows(page) -> list[MulticastRow]:
     return result
 
 
+def _is_multicast_list_page(url: str) -> bool:
+    u = (url or "").lower()
+    return "iptv.cqshushu.com" in u and "t=multicast" in u and "index.php?p=" not in u
+
+
+def _ensure_multicast_list(page, args) -> bool:
+    """进入带筛选框的组播列表页；若已在列表页则跳过整页 goto。"""
+    try:
+        if _is_multicast_list_page(page.url) and page.locator("#provinceSelect").count() > 0:
+            return True
+    except Exception:
+        pass
+    page.goto(MULTICAST_ENTRY, wait_until="domcontentloaded", timeout=args.timeout_ms)
+    try:
+        page.wait_for_selector("#provinceSelect", state="visible", timeout=min(90000, args.timeout_ms))
+    except Exception as e:
+        print(
+            f"[skip] multicast list missing #provinceSelect ({e!s}); url={page.url!r}",
+            file=sys.stderr,
+        )
+        return False
+    page.wait_for_timeout(400)
+    return True
+
+
 def _pick_row(rows: list[MulticastRow], region_zh: str) -> MulticastRow | None:
     if not rows:
         return None
@@ -246,30 +271,40 @@ def _pick_row(rows: list[MulticastRow], region_zh: str) -> MulticastRow | None:
     return pool[0]
 
 
-def process_region(page, context, code: str, region_zh: str, slug: str, args) -> str | None:
-    # 不用 networkidle：第三方广告/统计会让页面长期不“静默”，动辄等满超时。
-    page.goto(MULTICAST_ENTRY, wait_until="domcontentloaded", timeout=args.timeout_ms)
-    try:
-        page.wait_for_selector("#provinceSelect", state="visible", timeout=min(90000, args.timeout_ms))
-    except Exception as e:
-        print(
-            f"[skip] {region_zh}: multicast page missing #provinceSelect ({e!s}); url={page.url!r}",
-            file=sys.stderr,
-        )
+def process_region(
+    page,
+    context,
+    code: str,
+    region_zh: str,
+    slug: str,
+    args,
+    *,
+    set_limit: bool,
+) -> str | None:
+    if not _ensure_multicast_list(page, args):
+        print(f"[skip] {region_zh}: cannot open multicast list", file=sys.stderr)
         return None
-    page.wait_for_timeout(600)
+    page.wait_for_timeout(200)
+    if set_limit:
+        try:
+            page.locator("#limitSelect").select_option(str(args.per_page), timeout=15000)
+            page.wait_for_timeout(450)
+        except Exception:
+            pass
     try:
         page.locator("#provinceSelect").select_option(code, timeout=45000)
     except Exception as e:
         print(f"[skip] {region_zh}: province select failed: {e!s}", file=sys.stderr)
         return None
-    page.wait_for_load_state("load", timeout=args.timeout_ms)
-    page.wait_for_timeout(400)
+    page.wait_for_timeout(700)
     try:
-        page.locator("#limitSelect").select_option(str(args.per_page), timeout=20000)
+        page.wait_for_selector(
+            'section[aria-label="组播源列表"] tbody tr',
+            state="visible",
+            timeout=25000,
+        )
     except Exception:
         pass
-    page.wait_for_timeout(300)
 
     rows = _extract_rows(page)
     row = _pick_row(rows, region_zh)
@@ -394,10 +429,18 @@ def main() -> int:
         )
         context.add_init_script(_STEALTH_INIT)
         page = context.new_page()
-        for code, zh, slug in regions:
+        for i, (code, zh, slug) in enumerate(regions):
             path = out_dir / f"{slug}4K.m3u"
             try:
-                text = process_region(page, context, code, zh, slug, args)
+                text = process_region(
+                    page,
+                    context,
+                    code,
+                    zh,
+                    slug,
+                    args,
+                    set_limit=(i == 0),
+                )
                 if text:
                     path.write_text(text, encoding="utf-8")
                     print(f"[ok] {path.name} ({zh})")
