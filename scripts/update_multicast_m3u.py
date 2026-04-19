@@ -21,8 +21,8 @@ from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import sync_playwright
 
-BASE = "https://blog.cqshushu.com/"
-MULTICAST_ENTRY = "https://blog.cqshushu.com/multicast-iptv"
+BASE = "https://iptv.cqshushu.com/"
+MULTICAST_ENTRY = "https://iptv.cqshushu.com/index.php?t=multicast&province=all&limit=6"
 IPTV_MULTICAST_ENTRY = "https://iptv.cqshushu.com/index.php?t=multicast"
 
 # 站点 ancr.js 会检测 navigator.webdriver 等；无头 Chromium 默认 true 会被拦截，页面无 #provinceSelect
@@ -319,22 +319,22 @@ def _extract_rows(page) -> list[MulticastRow]:
 
 def _is_multicast_list_page(url: str) -> bool:
     u = (url or "").lower()
-    return "blog.cqshushu.com" in u and "multicast-iptv" in u
+    return "iptv.cqshushu.com" in u and "t=multicast" in u and "index.php?p=" not in u
 
 
 def _ensure_multicast_list(page, args) -> bool:
-    """进入 blog 组播列表页；若已在列表页则跳过整页 goto。"""
+    """进入 iptv 组播列表页；若已在列表页则跳过整页 goto。"""
     try:
-        if _is_multicast_list_page(page.url) and page.locator('select[name="region"]').count() > 0:
+        if _is_multicast_list_page(page.url) and page.locator("#provinceSelect").count() > 0:
             return True
     except Exception:
         pass
     page.goto(MULTICAST_ENTRY, wait_until="domcontentloaded", timeout=args.timeout_ms)
     try:
-        page.wait_for_selector('select[name="region"]', state="visible", timeout=min(30000, args.timeout_ms))
+        page.wait_for_selector("#provinceSelect", state="visible", timeout=min(30000, args.timeout_ms))
     except Exception as e:
         print(
-            f"[skip] blog multicast page missing region select ({e!s}); url={page.url!r}",
+            f"[skip] iptv multicast page missing province select ({e!s}); url={page.url!r}",
             file=sys.stderr,
         )
         raise SiteBlockedError("multicast list blocked")
@@ -351,7 +351,7 @@ def _ensure_iptv_verified(page, args) -> None:
 
 def _available_region_codes(page) -> set[str]:
     vals: set[str] = set()
-    opts = page.locator('select[name="region"] option')
+    opts = page.locator("#provinceSelect option")
     for i in range(opts.count()):
         v = (opts.nth(i).get_attribute("value") or "").strip().lower()
         if v:
@@ -388,61 +388,46 @@ def process_region(
     page.wait_for_timeout(150)
     if set_limit:
         try:
-            page.locator('select[name="limit"]').select_option(str(args.per_page), timeout=8000)
+            page.locator("#limitSelect").select_option(str(args.per_page), timeout=8000)
             page.wait_for_timeout(250)
         except Exception:
             pass
     try:
-        page.locator('select[name="region"]').select_option(code, timeout=8000)
-        page.locator(".btn-search").click(timeout=5000)
+        page.locator("#provinceSelect").select_option(code, timeout=8000)
     except Exception as e:
         print(f"[skip] {region_zh}: province select failed: {e!s}", file=sys.stderr)
         return None
     page.wait_for_timeout(500)
     try:
-        page.wait_for_selector("table.hotel-iptv-table tbody tr", state="visible", timeout=10000)
+        page.wait_for_selector("table.iptv-table tbody tr", state="visible", timeout=10000)
     except Exception:
         pass
 
     target_idx = -1
-    target_page = 1
-    for page_no in range(1, max(1, args.max_region_pages) + 1):
-        tr_list = page.locator("table.hotel-iptv-table tbody tr")
-        n = tr_list.count()
-        for i in range(n):
-            tr = tr_list.nth(i)
-            tds = tr.locator("td")
-            if tds.count() < 6:
-                continue
-            status = tds.nth(5).inner_text().strip()
-            typ = tds.nth(2).inner_text().strip()
-            if region_zh not in typ:
-                continue
-            # 仅选“新上线”状态（按用户要求）
-            if "新上线" in status:
-                target_idx = i
-                target_page = page_no
-                break
-        if target_idx >= 0:
+    tr_list = page.locator("table.iptv-table tbody tr")
+    n = tr_list.count()
+    for i in range(n):
+        tr = tr_list.nth(i)
+        tds = tr.locator("td")
+        if tds.count() < 6:
+            continue
+        typ = tds.nth(2).inner_text().strip()
+        if region_zh not in typ:
+            continue
+        status_txt = tds.nth(5).inner_text().strip()
+        if "新上线" in status_txt:
+            target_idx = i
             break
-        # 翻到下一页继续找“新上线”
-        if page_no < args.max_region_pages:
-            pager = page.locator(f'a.page-link[data-page="{page_no + 1}"]')
-            if pager.count() == 0:
-                break
-            try:
-                pager.first.click(timeout=4000)
-                page.wait_for_timeout(600)
-            except Exception:
-                break
 
     if target_idx < 0:
         print(f"[skip] {region_zh}: no multicast rows", file=sys.stderr)
         return None
-    print(f"[info] {region_zh}: found 新上线 on page {target_page}", file=sys.stderr)
-    tr_list = page.locator("table.hotel-iptv-table tbody tr")
+    print(f"[info] {region_zh}: found 新上线 on current page", file=sys.stderr)
+    tr_list = page.locator("table.iptv-table tbody tr")
     tr = tr_list.nth(target_idx)
-    token = (tr.locator("a.ip-link").first.get_attribute("data-p") or "").strip()
+    onclick = (tr.locator("a.ip-link").first.get_attribute("onclick") or "").strip()
+    m = re.search(r"gotoIP\('([^']+)'\s*,\s*'multicast'\)", onclick)
+    token = m.group(1).strip() if m else ""
     if not token:
         print(f"[skip] {region_zh}: missing token data-p", file=sys.stderr)
         return None
