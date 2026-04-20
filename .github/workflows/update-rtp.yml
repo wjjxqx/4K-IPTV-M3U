@@ -3,8 +3,8 @@ name: Update RTP Sources
 on:
   workflow_dispatch:
   schedule:
-    # 每 3 天 UTC 02:00 触发一次
-    - cron: "0 2 */3 * *"
+    # 每天执行 2 次（UTC 00:00、12:00）
+    - cron: "0 0,12 * * *"
 
 concurrency:
   group: update-rtp-${{ github.ref }}
@@ -45,8 +45,6 @@ jobs:
           fi
 
       - name: Run updater
-        env:
-          QUAKE_TOKEN: ${{ secrets.QUAKE_TOKEN }}
         run: python rtp/b.py
 
       - name: Commit and push if changed
