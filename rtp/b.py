@@ -48,6 +48,19 @@ def check_and_clear_existing(txt_file, m3u_file):
         with open(file, 'w', encoding='utf-8') as f: f.write("")
     return False
 
+
+def clear_output_files(txt_output_dir, m3u_output_dir):
+    """运行前清理历史产物，避免旧命名文件残留。"""
+    for out_dir, suffix in ((txt_output_dir, ".txt"), (m3u_output_dir, ".m3u")):
+        if not os.path.exists(out_dir):
+            continue
+        for name in os.listdir(out_dir):
+            if name.endswith(suffix):
+                try:
+                    os.remove(os.path.join(out_dir, name))
+                except OSError:
+                    pass
+
 def _strip_html(raw):
     no_tags = re.sub(r"<[^>]+>", "", raw)
     return unescape(no_tags).replace("\xa0", " ").strip()
@@ -214,9 +227,12 @@ def normalize_group_title(raw_type: str, province: str) -> str:
         right = text.split("|")[-1].strip()
         if right:
             return right
-    # 兜底：去掉“组播”后缀噪音
-    text = text.replace("组播", "").strip()
-    return text or province
+    # 兜底：统一裁剪为“省份+运营商”，去掉城市等中间信息
+    carriers = ("电信", "联通", "移动", "广电")
+    for carrier in carriers:
+        if carrier in text:
+            return f"{province}{carrier}"
+    return province
 
 def fetch_channel_lines_by_province(province: str):
     rows = fetch_region_rows_by_ajax(province, limit=20)
@@ -448,6 +464,7 @@ def main():
 
     os.makedirs(txt_output_dir, exist_ok=True)
     os.makedirs(m3u_output_dir, exist_ok=True)
+    clear_output_files(txt_output_dir, m3u_output_dir)
 
     # 流水线处理各省份
     for province in PROVINCES:
