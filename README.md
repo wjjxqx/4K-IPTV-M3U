@@ -13,9 +13,6 @@
 
 - `txt/*.txt`
 - `m3u/*.m3u`
- 使用extract_rtp_group_channels.py 收集组播IP，生成：
-
-- `rtp/rtp/*.txt`
   
 ## 本地运行
 
@@ -23,7 +20,7 @@
    - `pip install -r requirements.txt`
 3. 运行：
    - `python rtp/b.py`
-   - `python extract_rtp_group_channels.py`
+  
 
 如需本地一键提交并推送，可使用：
 
@@ -32,7 +29,7 @@
 ## GitHub 定时更新（每 3 天一次组播IP，一天2次更新udpxy服务器）
 
 工作流文件：`.github/workflows/update-rtp.yml`
-           `.github/workflows/update-rtp-groups.yml`
+          
 
 - 定时表达式：`0 2 */3 * *`
 - 触发方式：手动触发 + 定时触发
