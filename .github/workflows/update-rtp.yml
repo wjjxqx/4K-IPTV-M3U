@@ -51,7 +51,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add txt/*.txt m3u/*.m3u || true
+          # Stage additions/modifications/deletions under outputs.
+          git add -A -- txt m3u || true
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
