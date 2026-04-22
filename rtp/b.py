@@ -512,17 +512,25 @@ def update_readme_file_list(repo_root: str) -> None:
     txt_block = f"## TXT 文件列表\n\n{txt_table}\n"
 
     content, m3u_count = re.subn(
-        r"## M3U 文件列表[\s\S]*?(?=\n---\n\n## TXT 文件列表)",
+        r"## M3U 文件列表[\s\S]*?(?=\r?\n## TXT 文件列表)",
         m3u_block.rstrip(),
         content,
         count=1,
     )
-    content, txt_count = re.subn(
-        r"## TXT 文件列表[\s\S]*$",
-        txt_block.rstrip(),
-        content,
-        count=1,
-    )
+    if "## 免责声明" in content:
+        content, txt_count = re.subn(
+            r"## TXT 文件列表[\s\S]*?(?=\r?\n---\r?\n\r?\n## 免责声明)",
+            txt_block.rstrip(),
+            content,
+            count=1,
+        )
+    else:
+        content, txt_count = re.subn(
+            r"## TXT 文件列表[\s\S]*$",
+            txt_block.rstrip(),
+            content,
+            count=1,
+        )
 
     if m3u_count == 0 or txt_count == 0:
         print("[-] README 结构不匹配（未找到列表区块），跳过自动更新。")
