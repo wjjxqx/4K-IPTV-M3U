@@ -11,6 +11,10 @@ from html import unescape
 from urllib.parse import quote
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
+try:
+    from zoneinfo import ZoneInfo  # py3.9+
+except Exception:  # pragma: no cover
+    ZoneInfo = None
 
 # ================= 配置区域 =================
 # 1. 组播源网站配置
@@ -354,8 +358,8 @@ def fetch_channel_lines_by_province(province: str, max_per_carrier: int = 5, max
         return [], "ajax_cfg_missing", province
     token_plain = ajax_cfg.get("token", "")
 
-    group_to_lines: dict[str, list[str]] = {}
-    group_to_seen: dict[str, set[str]] = {}
+    # group_title -> list of sources, each source is list of "name,url" lines
+    group_to_sources: dict[str, list[list[str]]] = {}
     selected_ops: list[str] = []
 
     for picked in selected_rows:
@@ -397,20 +401,21 @@ def fetch_channel_lines_by_province(province: str, max_per_carrier: int = 5, max
         lines = parse_channel_lines(channels_html)
         if not lines:
             continue
-        bucket = group_to_lines.setdefault(group_title, [])
-        bucket_seen = group_to_seen.setdefault(group_title, set())
+        source_seen: set[str] = set()
+        source_lines: list[str] = []
         for line in lines:
-            if line in bucket_seen:
+            if line in source_seen:
                 continue
-            bucket_seen.add(line)
-            bucket.append(line)
+            source_seen.add(line)
+            source_lines.append(line)
+        group_to_sources.setdefault(group_title, []).append(source_lines)
 
-    if not group_to_lines:
+    if not group_to_sources:
         return [], "channel_lines_empty", province
 
     unique_ops = sorted(set(selected_ops))
     print(f"[*] [{province}] 已提取源数量: {len(selected_rows)}（电信/移动/联通各最多{max_per_carrier}条），来源: {', '.join(unique_ops)}")
-    return group_to_lines, "ok", province
+    return group_to_sources, "ok", province
 
 
 def extract_test_targets(template_content, max_targets=5):
@@ -511,7 +516,11 @@ def update_readme_file_list(repo_root: str) -> None:
     with open(readme_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # GitHub Actions runs in UTC by default; use Beijing time for display.
+    if ZoneInfo is not None:
+        updated_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     m3u_table = _build_readme_section_table(repo_root, "m3u", ".m3u", updated_at)
     txt_table = _build_readme_section_table(repo_root, "txt", ".txt", updated_at)
     m3u_block = f"## M3U 文件列表\n\n{m3u_table}\n"
@@ -556,34 +565,38 @@ def process_province(province, txt_output_dir, m3u_output_dir, max_pages=30, max
     if check_and_clear_existing(out_txt, out_m3u): return
 
     # 2. 直接从频道列表提取 频道名+播放地址
-    grouped_lines, status, _ = fetch_channel_lines_by_province(
+    grouped_sources, status, _ = fetch_channel_lines_by_province(
         province,
         max_pages=max_pages,
         max_per_carrier=max_per_carrier,
     )
-    if not grouped_lines:
+    if not grouped_sources:
         print(f"[-] [{province}] 频道提取失败: {status}")
         return
 
-    # 3. 按运营商分组分别生成 txt/m3u（如：湖北电信、湖北联通、湖北移动）
+    # 3. 按运营商分组、按源序号分别生成 txt/m3u
+    #    例：山东电信.m3u、山东电信1.m3u、山东电信2.m3u ...
     total_channels = 0
-    exported = 0
-    for group_title, channel_lines in grouped_lines.items():
-        if not channel_lines:
-            continue
-        out_txt = os.path.join(txt_output_dir, f"{group_title}.txt")
-        out_m3u = os.path.join(m3u_output_dir, f"{group_title}.m3u")
-        txt_content = "\n".join(channel_lines)
-        with open(out_txt, 'w', encoding='utf-8') as f_txt, open(out_m3u, 'w', encoding='utf-8') as f_m3u:
-            f_txt.write(txt_content + "\n")
-            f_m3u.write(f'#EXTM3U x-tvg-url="{EPG_URL}"\n')
-            f_m3u.write(txt_to_m3u_format(txt_content, group_title) + "\n")
-        exported += 1
-        total_channels += len(channel_lines)
-    if exported == 0:
+    exported_sources = 0
+    for group_title, sources in grouped_sources.items():
+        for idx, channel_lines in enumerate(sources):
+            if not channel_lines:
+                continue
+            suffix = "" if idx == 0 else str(idx)
+            file_stem = f"{group_title}{suffix}"
+            out_txt = os.path.join(txt_output_dir, f"{file_stem}.txt")
+            out_m3u = os.path.join(m3u_output_dir, f"{file_stem}.m3u")
+            txt_content = "\n".join(channel_lines)
+            with open(out_txt, 'w', encoding='utf-8') as f_txt, open(out_m3u, 'w', encoding='utf-8') as f_m3u:
+                f_txt.write(txt_content + "\n")
+                f_m3u.write(f'#EXTM3U x-tvg-url="{EPG_URL}"\n')
+                f_m3u.write(txt_to_m3u_format(txt_content, group_title) + "\n")
+            exported_sources += 1
+            total_channels += len(channel_lines)
+    if exported_sources == 0:
         print(f"[-] [{province}] 频道提取失败: channel_lines_empty")
         return
-    print(f"[+] 完美！[{province}] 更新完成，导出 {total_channels} 条频道，生成 {exported} 个运营商文件。")
+    print(f"[+] 完美！[{province}] 更新完成，导出 {total_channels} 条频道，生成 {exported_sources} 条源文件（每运营商多条）。")
 
 def push_to_github(files):
     """
@@ -681,20 +694,28 @@ def main():
     m3u_output_dir = os.path.join(repo_root, "m3u")
 
     if args.test_region:
-        grouped_lines, status, group_title = fetch_channel_lines_by_province(
+        grouped_sources, status, group_title = fetch_channel_lines_by_province(
             args.test_region,
             max_pages=args.max_pages,
             max_per_carrier=args.max_per_carrier,
         )
-        total = sum(len(v) for v in grouped_lines.values()) if grouped_lines else 0
+        total = (
+            sum(len(lines) for sources in grouped_sources.values() for lines in sources)
+            if grouped_sources
+            else 0
+        )
         print(f"\n[*] 测试结果: 地区={args.test_region}，分组={group_title}，状态={status}，频道数={total}")
-        for k, v in grouped_lines.items():
-            print(f"  - {k}: {len(v)} 条")
+        for k, sources in grouped_sources.items():
+            n_sources = len(sources)
+            n_lines = sum(len(x) for x in sources)
+            print(f"  - {k}: {n_sources} 条源，共 {n_lines} 条")
         return
 
     os.makedirs(txt_output_dir, exist_ok=True)
     os.makedirs(m3u_output_dir, exist_ok=True)
-    clear_output_files(txt_output_dir, m3u_output_dir)
+    # Only clear outputs on full runs; avoid wiping other provinces during partial updates.
+    if not args.only_province:
+        clear_output_files(txt_output_dir, m3u_output_dir)
 
     # 流水线处理各省份
     for province in PROVINCES:
